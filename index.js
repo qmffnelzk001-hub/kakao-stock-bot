@@ -108,7 +108,7 @@ async function getAnalyzedNews(name) {
 // 카카오톡 챗봇 스킬 엔드포인트
 app.post('/stock', async (req, res) => {
     const utterance = req.body.userRequest.utterance; // 사용자 입력 (예: 주식 : 삼성전자)
-    const stockName = utterance.replace(/주식\s*:\s*/, '').trim();
+    let stockName = utterance.replace('주식', '').replace(':', '').trim();
 
     if (!stockName) {
         return res.json({
@@ -163,3 +163,4 @@ const PORT = process.env.PORT || 3000;
 app.listen(PORT, () => {
     console.log(`카카오톡 주식 봇 서버가 포트 ${PORT}에서 실행 중입니다.`);
 });
+
