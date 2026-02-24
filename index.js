@@ -1,6 +1,7 @@
 const express = require('express');
 const axios = require('axios');
-const yahooFinance = require('yahoo-finance2').default; // v3 최신 방식
+const YahooFinance = require('yahoo-finance2').default;
+const yahooFinance = new YahooFinance();
 const { GoogleGenerativeAI } = require('@google/generative-ai');
 require('dotenv').config();
 
@@ -10,100 +11,173 @@ app.use(express.json());
 const genAI = new GoogleGenerativeAI(process.env.GEMINI_API_KEY);
 const model = genAI.getGenerativeModel({ model: "gemini-1.5-flash" });
 
-// 주요 종목 티커 사전 (검색 실패 대비)
-const STOCKS = {
-    '삼성전자': '005930.KS',
-    '삼성전자우': '005935.KS',
-    'SK하이닉스': '000660.KS',
-    '카카오': '035720.KS',
-    '네이버': '035420.KS',
-    '현대차': '005380.KS',
-    '애플': 'AAPL',
-    '테슬라': 'TSLA',
-    '엔비디아': 'NVDA'
-};
+/**
+ * 주식 종목명으로 티커(Ticker) 검색
+ */
+async function findTicker(name) {
+    try {
+        console.log(`Searching for ticker: ${name}`);
+        const results = await yahooFinance.search(name);
+        if (results.quotes && results.quotes.length > 0) {
+            // 가장 유사한 첫 번째 결과 반환 (한국 주식 우선 순위 고려 가능)
+            const ticker = results.quotes[0].symbol;
+            console.log(`Found ticker: ${ticker}`);
+            return ticker;
+        }
+    } catch (error) {
+        console.error('Ticker 검색 오류:', error.message);
+    }
+    return null;
+}
 
+/**
+ * 실시간 주가 정보 가져오기
+ */
+async function getStockPrice(ticker) {
+    try {
+        const quote = await yahooFinance.quote(ticker);
+        return {
+            price: quote.regularMarketPrice,
+            change: quote.regularMarketChange,
+            changePercent: quote.regularMarketChangePercent,
+            currency: quote.currency,
+            name: quote.shortName || ticker
+        };
+    } catch (error) {
+        console.error('주가 조회 오류:', error.message);
+        return null;
+    }
+}
+
+/**
+ * 뉴스 검색 및 Gemini 분석
+ */
+async function getAnalyzedNews(name) {
+    try {
+        // 구글 뉴스 RSS 활용 (User-Agent 추가하여 차단 방지)
+        const rssUrl = `https://news.google.com/rss/search?q=${encodeURIComponent(name)}+주식&hl=ko&gl=KR&ceid=KR:ko`;
+        const response = await axios.get(rssUrl, {
+            headers: {
+                'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36'
+            },
+            timeout: 3000 // 3초 타임아웃
+        });
+        const xml = response.data;
+
+        // 간단한 XML 파싱 (정규식 활용)
+        const titleMatches = Array.from(xml.matchAll(/<title>([^<]+)<\/title>/g));
+        const linkMatches = Array.from(xml.matchAll(/<link>([^<]+)<\/link>/g));
+
+        // 상위 5개 뉴스만 분석 (속도 향상 및 토큰 절약)
+        const rawTitles = titleMatches.map(m => m[1]).slice(1, 6);
+        const rawLinks = linkMatches.map(m => m[1]).slice(1, 6);
+
+        if (rawTitles.length === 0) {
+            return "최근 관련 뉴스를 찾을 수 없습니다.";
+        }
+
+        const prompt = `
+            다음은 '${name}' 주식과 관련된 최신 뉴스 제목들입니다.
+            호재(긍정)와 악재(부정)로 나누어 아주 짧게 핵심만 요약해줘.
+            
+            형식:
+            📢 [호재]
+            - 요약...
+            
+            ⚠️ [악재]
+            - 요약...
+            
+            뉴스:
+            ${rawTitles.join('\n')}
+        `;
+
+        // Gemini 분석 (타임아웃 고려하여 신속하게 수행)
+        const result = await model.generateContent(prompt);
+        const analysisText = result.response.text().trim();
+
+        let finalResponse = analysisText + "\n\n🔗 관련 링크:\n";
+        for (let i = 0; i < Math.min(2, rawTitles.length); i++) {
+            finalResponse += `- ${rawTitles[i]}\n  ${rawLinks[i]}\n`;
+        }
+
+        return finalResponse;
+    } catch (error) {
+        console.error('뉴스 분석 오류:', error.message);
+        return "뉴스를 분석하는 중에 문제가 발생했습니다. (타임아웃 혹은 서비스 일시 오류)";
+    }
+}
+
+// 카카오톡 챗봇 스킬 엔드포인트
 app.post('/stock', async (req, res) => {
     try {
-        const utterance = req.body.userRequest.utterance || "";
-        // 종목명 추출 (주식: 삼성전자 -> 삼성전자)
-        const name = utterance.replace(/주식/g, '').replace(/[:：=]/g, '').trim();
-
-        if (!name) {
-            return res.json({
-                version: "2.0",
-                template: { outputs: [{ simpleText: { text: "조회할 종목명을 알려주세요. (예: 주식:삼성전자)" } }] }
-            });
+        const userRequest = req.body.userRequest;
+        if (!userRequest || !userRequest.utterance) {
+            throw new Error('올바르지 않은 요청 형식입니다.');
         }
 
-        // 1. 티커 결정
-        let ticker = STOCKS[name];
-        if (!ticker) {
-            const search = await yahooFinance.search(name).catch(() => null);
-            if (search && search.quotes && search.quotes.length > 0) {
-                ticker = search.quotes[0].symbol;
-            } else {
-                ticker = name + ".KS"; 
-            }
-        }
+        const utterance = userRequest.utterance;
+        const stockName = utterance.replace(/주식\s*:\s*/, '').trim();
 
-        // 2. 주가 데이터 조회
-        const quote = await yahooFinance.quote(ticker).catch((err) => {
-            console.error("Quote Error:", err);
-            return null;
-        });
-
-        if (!quote || quote.regularMarketPrice === undefined) {
+        if (!stockName) {
             return res.json({
                 version: "2.0",
-                template: { 
-                    outputs: [{ 
-                        simpleText: { 
-                            text: `[${name}] 시세 정보를 가져오지 못했습니다.\n티커: ${ticker}\n\n※ 종목명이 정확한지 확인하시거나 잠시 후 다시 시도해주세요.` 
-                        } 
-                    }] 
+                template: {
+                    outputs: [{ simpleText: { text: "조회할 종목명을 입력해주세요.\n(예: 주식 : 삼성전자)" } }]
                 }
             });
         }
 
-        // 3. 뉴스 분석 (Gemini)
-        let analysisText = "";
-        try {
-            const newsUrl = `https://news.google.com/rss/search?q=${encodeURIComponent(name)}+주식&hl=ko&gl=KR&ceid=KR:ko`;
-            const newsResponse = await axios.get(newsUrl);
-            const titles = Array.from(newsResponse.data.matchAll(/<title>([^<]+)<\/title>/g))
-                                .map(m => m[1])
-                                .slice(1, 6);
+        console.log(`Processing request for: ${stockName}`);
 
-            if (titles.length > 0) {
-                const prompt = `${name} 주식 관련 최신 뉴스들입니다. 호재와 악재를 분류하고 핵심을 요약해주세요.\n\n뉴스 목록:\n${titles.join('\n')}`;
-                const result = await model.generateContent(prompt);
-                analysisText = result.response.text();
-            } else {
-                analysisText = "최근 관련 뉴스를 찾을 수 없습니다.";
-            }
-        } catch (e) {
-            analysisText = "뉴스 분석 중 오류가 발생했습니다.";
+        // 1. 티커 찾기
+        const ticker = await findTicker(stockName);
+        if (!ticker) {
+            return res.json({
+                version: "2.0",
+                template: {
+                    outputs: [{ simpleText: { text: `'${stockName}' 종목을 찾을 수 없습니다. 정확한 이름을 입력하거나 티커(예: 005930.KS)를 직접 입력해보세요.` } }]
+                }
+            });
         }
 
-        // 4. 응답 전송
-        const changeSign = quote.regularMarketChange > 0 ? "▲" : (quote.regularMarketChange < 0 ? "▼" : "-");
-        const infoLine = `📈 ${quote.shortName || name} (${ticker})\n현재가: ${quote.regularMarketPrice.toLocaleString()} ${quote.currency}\n변동: ${changeSign}${Math.abs(quote.regularMarketChange).toFixed(2)} (${quote.regularMarketChangePercent.toFixed(2)}%)`;
+        // 2. 주가 정보 및 뉴스 분석 병렬 처리 (속도 향상)
+        const [info, analysis] = await Promise.all([
+            getStockPrice(ticker),
+            getAnalyzedNews(stockName)
+        ]);
+
+        if (!info) {
+            throw new Error('주가 정보를 가져오는데 실패했습니다.');
+        }
+
+        const priceText = `📈 ${info.name} (${ticker})\n현재가: ${info.price.toLocaleString()} ${info.currency}\n변동: ${info.change > 0 ? '▲' : '▼'} ${info.change.toLocaleString()} (${info.changePercent.toFixed(2)}%)`;
 
         res.json({
             version: "2.0",
             template: {
-                outputs: [{ simpleText: { text: `${infoLine}\n\n${analysisText}` } }]
+                outputs: [
+                    {
+                        simpleText: {
+                            text: `${priceText}\n\n${analysis}`
+                        }
+                    }
+                ]
             }
         });
 
-    } catch (err) {
+    } catch (error) {
+        console.error('전체 처리 오류:', error.message);
         res.json({
             version: "2.0",
-            template: { outputs: [{ simpleText: { text: "데이터 조회 중 오류가 발생했습니다." } }] }
+            template: {
+                outputs: [{ simpleText: { text: "데이터 조회 중 오류가 발생했습니다. 잠시 후 다시 시도해주세요." } }]
+            }
         });
     }
 });
 
 const PORT = process.env.PORT || 3000;
-app.listen(PORT, () => console.log(`Server started`));
+app.listen(PORT, () => {
+    console.log(`카카오톡 주식 봇 서버가 포트 ${PORT}에서 실행 중입니다.`);
+});
+
