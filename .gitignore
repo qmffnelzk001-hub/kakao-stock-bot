@@ -2,3 +2,9 @@ node_modules/
 .env
 .DS_Store
 *.log
+test_*.js
+check_models.js
+list_available_models*.js
+models_list.txt
+final_*.js
+debug_*.js
