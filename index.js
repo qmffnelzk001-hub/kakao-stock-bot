@@ -9,9 +9,9 @@ const app = express();
 app.use(express.json());
 
 const genAI = new GoogleGenerativeAI(process.env.GEMINI_API_KEY);
-// 모델명을 최신 표준인 gemini-2.0-flash로 변경 (2026년 기준) 및 안전 설정 완화
+// 모델명을 최신 표준인 gemini-2.5-flash로 변경 (2026년 기준) 및 안전 설정 완화
 const model = genAI.getGenerativeModel({
-    model: "gemini-2.0-flash",
+    model: "gemini-2.5-flash",
     safetySettings: [
         { category: "HARM_CATEGORY_HARASSMENT", threshold: "BLOCK_NONE" },
         { category: "HARM_CATEGORY_HATE_SPEECH", threshold: "BLOCK_NONE" },
