@@ -183,66 +183,68 @@ async function getStockPrice(ticker) {
     }
 }
 
+// 분석 결과 캐시 (메모리 내 저장)
+const ANALYSIS_CACHE = new Map();
+const CACHE_TTL = 1000 * 60 * 10; // 10분간 유효
+
 /**
- * 뉴스 검색 및 Gemini 분석 (긍정/부정 요약 + 투자 비율)
+ * 뉴스 검색 및 Gemini 분석
  */
 async function getAnalyzedNews(name) {
-    // API 키 확인
-    if (!process.env.GEMINI_API_KEY) {
-        console.error("[Gemini Error] API Key is missing in .env file");
-        return "현재 AI 분석 서비스 설정을 확인 중입니다. 뉴스 제목을 우선 전달합니다.";
+    if (!process.env.GEMINI_API_KEY) return "AI 분석 설정을 확인해주세요.";
+
+    const now = Date.now();
+    const cached = ANALYSIS_CACHE.get(name);
+
+    // 1. 이미 분석된 최신 데이터가 있으면 즉시 반환
+    if (cached && (now - cached.timestamp < CACHE_TTL)) {
+        console.log(`[Cache] Returning cached analysis for ${name}`);
+        return cached.text;
     }
 
     const analysisPromise = (async () => {
         try {
-            // 뉴스 조회를 더 빠르게 (타임아웃 1.5초로 단축 테크닉)
             const rssUrl = `https://news.google.com/rss/search?q=${encodeURIComponent(name)}+주식&hl=ko&gl=KR&ceid=KR:ko`;
             const response = await axios.get(rssUrl, { timeout: 1500 });
             const xml = response.data;
 
-            const titles = Array.from(xml.matchAll(/<title>([^<]+)<\/title>/g)).map(m => m[1]).slice(2, 5);
-            if (titles.length === 0) return "최근 관련 뉴스가 없어 분석이 어렵습니다.";
+            // 더 빠른 분석을 위해 뉴스 2개로 압축
+            const titles = Array.from(xml.matchAll(/<title>([^<]+)<\/title>/g)).map(m => m[1]).slice(2, 4);
+            if (titles.length === 0) return "분석할 최신 뉴스가 없습니다.";
 
-            const prompt = `[${name}] 뉴스 요약해줘(3줄):
-            📢긍정:
-            ⚠️부정:
-            📊의견:
-            뉴스목록:
-            ${titles.join('\n')}`;
+            const prompt = `[${name}] 뉴스 요약(3줄):\n📢긍정:\n⚠️부정:\n📊의견:\n뉴스:\n${titles.join('\n')}`;
 
-            let analysisText = "";
             try {
                 const startTime = Date.now();
-                const result = await model.generateContent(prompt);
-                const aiRes = await result.response;
-                analysisText = aiRes.text().trim();
+                // 속도 최적화를 위한 설정 추가
+                const result = await model.generateContent({
+                    contents: [{ role: 'user', parts: [{ text: prompt }] }],
+                    generationConfig: { maxOutputTokens: 200, temperature: 0.1 }
+                });
+                const analysisText = result.response.text().trim();
+
+                // 캐시에 저장
+                ANALYSIS_CACHE.set(name, { text: analysisText, timestamp: Date.now() });
                 console.log(`[Gemini] Success: ${name} (${Date.now() - startTime}ms)`);
+                return analysisText;
+
             } catch (apiError) {
-                console.error("[Gemini API Error]:", apiError.message, "Status:", apiError.status);
-
-                // 사용자가 요청한 '토큰/한도 부족' 알림 추가
-                if (apiError.status === 429) {
-                    analysisText = "⚠️ 현재 무료 API 할당량(Rate Limit)을 초과했습니다. 잠시 후 다시 시도해 주세요.";
-                } else if (apiError.status === 403 || apiError.message?.includes('quota')) {
-                    analysisText = "⚠️ API 사용 한도(Quota)가 모두 소모되었습니다. 관리자에게 문의하거나 내일 다시 이용해 주세요.";
-                } else {
-                    analysisText = `⚠️ AI 분석 중 오류가 발생했습니다: ${apiError.message?.substring(0, 50)}`;
-                }
+                console.error("[Gemini Error]:", apiError.message, apiError.status);
+                if (apiError.status === 429) return "⚠️ API 할당량 초과입니다. 잠시 후 시도해주세요.";
+                if (apiError.message?.includes('quota')) return "⚠️ 사용 한도가 모두 소모되었습니다.";
+                return "⚠️ AI 분석 중 일시적인 오류가 발생했습니다.";
             }
-
-            return analysisText;
         } catch (e) {
-            console.error(`[News/Internal Error]: ${e.message}`);
-            return "현재 뉴스 데이터를 가져올 수 없어 분석을 진행할 수 없습니다.";
+            return "현재 뉴스 데이터를 가져올 수 없습니다.";
         }
     })();
 
-    // 4.5초 타임아웃 세이프가드 (카카오톡 5초 제한 대응 최대치)
+    // 4.6초 타임아웃 (카카오톡 5초 제한 대응)
     const timeoutPromise = new Promise((resolve) =>
         setTimeout(() => {
-            console.warn(`[Timeout] Analysis took > 4.5s for ${name}`);
-            resolve("현재 분석 요청이 많아 지연되고 있습니다. 결과가 곧 준비되니 잠시 후 다시 확인해주세요.");
-        }, 4500)
+            console.warn(`[Timeout/Background] ${name} analysis continuing in background...`);
+            resolve("🚀 뉴스 분석이 거의 완료되었습니다! 5초 후 다시 검색하시면 결과를 바로 보실 수 있습니다.");
+        }, 4600)
     );
 
     return Promise.race([analysisPromise, timeoutPromise]);
