@@ -261,21 +261,31 @@ app.post('/stock', async (req, res) => {
         const utterance = req.body.userRequest?.utterance;
         if (!utterance) throw new Error('Empty utterance');
 
-        let stockName = utterance.replace(/^주식\s*[:：]?\s*/, '').trim();
+        // 1. 발화에서 종목명 추출 (유연한 검색 허용)
+        let stockName = utterance
+            .replace(/^주식\s*[:：]?\s*/, '') // "주식 :" 제거
+            .replace(/\s*어때\??$/, '')        // "어때?" 제거
+            .replace(/\s*주가\??$/, '')        // "주가?" 제거
+            .trim();
+
         if (!stockName) {
             return res.json({ version: "2.0", template: { outputs: [{ simpleText: { text: "종목명을 입력해주세요." } }] } });
         }
 
-        console.log(`[Request] stockName: [${stockName}]`);
+        console.log(`[Request] Resolved stockName: [${stockName}]`);
 
-        // 1. 티커 찾기
+        // 2. 티커 찾기
         const ticker = await findTicker(stockName);
         if (!ticker) {
+            // "주식"으로 시작하지 않은 발화인데 종목을 못 찾은 경우, 일반 대화로 간주하고 조용히 안내
+            const isIntentionalSearch = utterance.startsWith("주식");
+            const failText = isIntentionalSearch
+                ? `'${stockName}' 종목을 찾을 수 없습니다. (예: 삼성전자, 테슬라)`
+                : `죄송해요, '${stockName}' 주식 정보를 찾지 못했습니다. 종목명을 정확히 입력해 주세요!`;
+
             return res.json({
                 version: "2.0",
-                template: {
-                    outputs: [{ simpleText: { text: `'${stockName}' 종목을 찾을 수 없습니다. (예: 005930 또는 삼성전자)` } }]
-                }
+                template: { outputs: [{ simpleText: { text: failText } }] }
             });
         }
 
