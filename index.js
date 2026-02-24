@@ -35,13 +35,13 @@ async function extractTickerFromNews(name) {
         const rssUrl = `https://news.google.com/rss/search?q=${encodeURIComponent(name)}+주식&hl=ko&gl=KR&ceid=KR:ko`;
         const response = await axios.get(rssUrl, { timeout: 3000 });
         const xml = response.data;
-
+        
         // 뉴스 제목이나 설명에서 (005930) 같은 숫자 패턴 찾기
         const match = xml.match(/\((\d{6})\)/);
         if (match) {
             const code = match[1];
             console.log(`[TickerExtract] Found code ${code} from news for ${name}`);
-            return `${code}.KS`;
+            return `${code}.KS`; 
         }
     } catch (e) {
         console.error(`[TickerExtract] Error: ${e.message}`);
@@ -56,7 +56,7 @@ async function findTicker(input) {
     const cleanInput = input.trim().toLowerCase();
     const cleanInputUpper = cleanInput.toUpperCase();
     console.log(`[TickerCheck] Input: "${input}"`);
-
+    
     // 1. 한국 주식 코드(6자리 숫자)인 경우 직접 변환
     if (/^\d{6}$/.test(cleanInput)) {
         return `${cleanInputUpper}.KS`;
@@ -102,7 +102,6 @@ async function getStockPrice(ticker) {
         console.log(`[StockPrice] Fetching quote for: ${ticker}`);
         const quote = await yahooFinance.quote(ticker);
         if (!quote || quote.regularMarketPrice === undefined) {
-            // .KS로 조회 실패 시 .KQ(코스닥)로 자동 재시도
             if (ticker.endsWith('.KS')) {
                 const kqTicker = ticker.replace('.KS', '.KQ');
                 console.log(`[StockPrice] No data for .KS, retrying with ${kqTicker}...`);
@@ -110,7 +109,7 @@ async function getStockPrice(ticker) {
             }
             return null;
         }
-
+        
         return {
             price: quote.regularMarketPrice,
             change: quote.regularMarketChange,
@@ -120,7 +119,6 @@ async function getStockPrice(ticker) {
         };
     } catch (error) {
         console.error(`[StockPrice] Error (${ticker}):`, error.message);
-        // 오류 발생 시에도 코스피라면 코스닥으로 한 번 더 시도
         if (ticker.endsWith('.KS')) {
             return await getStockPrice(ticker.replace('.KS', '.KQ'));
         }
@@ -137,13 +135,12 @@ async function getAnalyzedNews(name) {
             const rssUrl = `https://news.google.com/rss/search?q=${encodeURIComponent(name)}+주식&hl=ko&gl=KR&ceid=KR:ko`;
             const response = await axios.get(rssUrl, { timeout: 3000 });
             const xml = response.data;
-
+            
             const titles = Array.from(xml.matchAll(/<title>([^<]+)<\/title>/g)).map(m => m[1]).slice(1, 5);
             const links = Array.from(xml.matchAll(/<link>([^<]+)<\/link>/g)).map(m => m[1]).slice(1, 4);
 
             if (titles.length === 0) return "분석할 최신 뉴스가 없습니다.";
 
-            // 사용자 요청에 맞춘 정교한 프롬프트
             const prompt = `
                 다음은 주식 '${name}'의 최신 뉴스 제목들입니다.
                 다음 형식을 엄격히 지켜서 딱 3줄로 응답해줘:
@@ -154,7 +151,7 @@ async function getAnalyzedNews(name) {
                 뉴스 제목:
                 ${titles.join('\n')}
             `;
-
+            
             let analysisText = "";
             try {
                 const result = await model.generateContent(prompt);
@@ -174,8 +171,7 @@ async function getAnalyzedNews(name) {
         }
     })();
 
-    // 3.5초 타임아웃 세이프가드 (카카오톡 대응)
-    const timeoutPromise = new Promise((resolve) =>
+    const timeoutPromise = new Promise((resolve) => 
         setTimeout(() => resolve("뉴스 분석 중입니다. 잠시 후 주가와 함께 다시 확인해주세요."), 3500)
     );
 
@@ -194,7 +190,6 @@ app.post('/stock', async (req, res) => {
 
         console.log(`[Request] stockName: [${stockName}]`);
 
-        // 1. 티커 찾기
         const ticker = await findTicker(stockName);
         if (!ticker) {
             return res.json({
@@ -205,7 +200,6 @@ app.post('/stock', async (req, res) => {
             });
         }
 
-        // 2. 주가 및 뉴스 병렬 수집
         const [info, analysis] = await Promise.all([
             getStockPrice(ticker),
             getAnalyzedNews(stockName)
