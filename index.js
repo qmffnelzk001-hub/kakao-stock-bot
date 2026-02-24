@@ -11,53 +11,103 @@ app.use(express.json());
 const genAI = new GoogleGenerativeAI(process.env.GEMINI_API_KEY);
 const model = genAI.getGenerativeModel({ model: "gemini-1.5-flash" });
 
+// 자주 검색되는 종목 매핑 (속도와 정확도를 위해)
+const COMMON_STOCKS = {
+    '삼성전자': '005930.KS',
+    '애플': 'AAPL',
+    '테슬라': 'TSLA',
+    '엔비디아': 'NVDA',
+    '네이버': '035420.KS',
+    '카카오': '035720.KS',
+    'sk하이닉스': '006660.KS',
+    '하이닉스': '006660.KS',
+    '현대차': '005380.KS',
+    '기아': '000270.KS',
+    '에코프로': '086520.KQ',
+    '삼성sdi': '006400.KS'
+};
+
 /**
- * 주식 종목명으로 티커(Ticker) 검색 또는 직접 입력 처리
+ * 뉴스 제목에서 6자리 종목 코드를 추출하여 티커로 변환 (한국 주식용)
  */
-async function findTicker(input) {
-    const cleanInput = input.trim().toUpperCase();
-    console.log(`[TickerCheck] Input: "${input}", Clean: "${cleanInput}"`);
-
-    // 1. 한국 주식 코드(6자리 숫자)인 경우 -> 가장 우선 처리
-    if (/^\d{6}$/.test(cleanInput)) {
-        const ticker = `${cleanInput}.KS`;
-        console.log(`[TickerCheck] 6-digit code detected. Mapping to: ${ticker}`);
-        return ticker;
-    }
-
-    // 2. 이미 마침표를 포함한 티커 형식이거나 명확한 해외 티커인 경우
-    if (/^[0-9A-Z.]+$/.test(cleanInput)) {
-        if (cleanInput.includes('.') || (cleanInput.length >= 2 && !/^\d+$/.test(cleanInput))) {
-            console.log(`[TickerCheck] Direct ticker recognized: ${cleanInput}`);
-            return cleanInput;
-        }
-    }
-
+async function extractTickerFromNews(name) {
     try {
-        console.log(`[TickerSearch] Searching via Yahoo Finance: ${input}`);
-        const results = await yahooFinance.search(input);
-        if (results.quotes && results.quotes.length > 0) {
-            const ticker = results.quotes[0].symbol;
-            console.log(`[TickerSearch] Found ticker: ${ticker} (${results.quotes[0].shortname || 'N/A'})`);
-            return ticker;
-        } else {
-            console.log(`[TickerSearch] No results found for: ${input}`);
+        const rssUrl = `https://news.google.com/rss/search?q=${encodeURIComponent(name)}+주식&hl=ko&gl=KR&ceid=KR:ko`;
+        const response = await axios.get(rssUrl, { timeout: 3000 });
+        const xml = response.data;
+
+        // 뉴스 제목이나 설명에서 (005930) 같은 숫자 패턴 찾기
+        const match = xml.match(/\((\d{6})\)/);
+        if (match) {
+            const code = match[1];
+            console.log(`[TickerExtract] Found code ${code} from news for ${name}`);
+            return `${code}.KS`;
         }
-    } catch (error) {
-        console.error(`[TickerSearch] Error searching for "${input}":`, error.message);
+    } catch (e) {
+        console.error(`[TickerExtract] Error: ${e.message}`);
     }
     return null;
 }
 
 /**
- * 실시간 주가 정보 가져오기
+ * 주식 종목명으로 티커(Ticker) 검색
+ */
+async function findTicker(input) {
+    const cleanInput = input.trim().toLowerCase();
+    const cleanInputUpper = cleanInput.toUpperCase();
+    console.log(`[TickerCheck] Input: "${input}"`);
+
+    // 1. 한국 주식 코드(6자리 숫자)인 경우 직접 변환
+    if (/^\d{6}$/.test(cleanInput)) {
+        return `${cleanInputUpper}.KS`;
+    }
+
+    // 2. 이미 티커 형식(.KS, .KQ 등 마침표 포함)인 경우 그대로 사용
+    if (cleanInputUpper.includes('.') && /^[0-9A-Z.]+$/.test(cleanInputUpper)) {
+        return cleanInputUpper;
+    }
+
+    // 3. 주요 종목 사전에 정의된 매핑 사용
+    const mapped = COMMON_STOCKS[cleanInput];
+    if (mapped) {
+        console.log(`[TickerCheck] Mapped ${cleanInput} to ${mapped}`);
+        return mapped;
+    }
+
+    // 4. 뉴스 RSS에서 6자리 코드 추출 시도 (한국 주식 특화)
+    const extracted = await extractTickerFromNews(input);
+    if (extracted) return extracted;
+
+    // 5. 야후 파이낸스 라이브러리 검색 (최후의 수단)
+    try {
+        console.log(`[TickerSearch] Searching Yahoo: ${input}`);
+        const results = await yahooFinance.search(input);
+        if (results.quotes && results.quotes.length > 0) {
+            const ticker = results.quotes[0].symbol;
+            console.log(`[TickerSearch] Found: ${ticker}`);
+            return ticker;
+        }
+    } catch (error) {
+        console.warn(`[TickerSearch] Failed for "${input}":`, error.message);
+    }
+
+    return null;
+}
+
+/**
+ * 실시간 주가 정보 가져오기 (실패 시 코스닥 폴백 포함)
  */
 async function getStockPrice(ticker) {
     try {
         console.log(`[StockPrice] Fetching quote for: ${ticker}`);
         const quote = await yahooFinance.quote(ticker);
         if (!quote || quote.regularMarketPrice === undefined) {
-            console.warn(`[StockPrice] No price data for: ${ticker}`);
+            // .KS로 조회 실패 시 .KQ(코스닥)로 자동 재시도
+            if (ticker.endsWith('.KS')) {
+                const kqTicker = ticker.replace('.KS', '.KQ');
+                console.log(`[StockPrice] No data for .KS, retrying with ${kqTicker}...`);
+                return await getStockPrice(kqTicker);
+            }
             return null;
         }
 
@@ -69,58 +119,53 @@ async function getStockPrice(ticker) {
             name: quote.shortName || quote.longName || ticker
         };
     } catch (error) {
-        console.error(`[StockPrice] Error for ${ticker}:`, error.message);
+        console.error(`[StockPrice] Error (${ticker}):`, error.message);
+        // 오류 발생 시에도 코스피라면 코스닥으로 한 번 더 시도
+        if (ticker.endsWith('.KS')) {
+            return await getStockPrice(ticker.replace('.KS', '.KQ'));
+        }
         return null;
     }
 }
 
 /**
- * 뉴스 검색 및 Gemini 분석 (3.5초 세이프가드 적용)
+ * 뉴스 검색 및 Gemini 분석
  */
 async function getAnalyzedNews(name) {
     const analysisPromise = (async () => {
         try {
-            // 구글 뉴스 RSS 활용
             const rssUrl = `https://news.google.com/rss/search?q=${encodeURIComponent(name)}+주식&hl=ko&gl=KR&ceid=KR:ko`;
-            const response = await axios.get(rssUrl, {
-                headers: {
-                    'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36'
-                },
-                timeout: 3000 // RSS 수집은 3초 내 완료
-            });
+            const response = await axios.get(rssUrl, { timeout: 3000 });
             const xml = response.data;
 
-            const titleMatches = Array.from(xml.matchAll(/<title>([^<]+)<\/title>/g));
-            const linkMatches = Array.from(xml.matchAll(/<link>([^<]+)<\/link>/g));
+            const titles = Array.from(xml.matchAll(/<title>([^<]+)<\/title>/g)).map(m => m[1]).slice(1, 4);
+            const links = Array.from(xml.matchAll(/<link>([^<]+)<\/link>/g)).map(m => m[1]).slice(1, 4);
 
-            const rawTitles = titleMatches.map(m => m[1]).slice(1, 4); // 분석 대상 축소 (3개)
-            const rawLinks = linkMatches.map(m => m[1]).slice(1, 3);
+            if (titles.length === 0) return "분석할 최신 뉴스가 없습니다.";
 
-            if (rawTitles.length === 0) return "최근 관련 뉴스가 없습니다.";
+            const prompt = `주식 '${name}' 뉴스 요약 (호재 📢, 악재 ⚠️):\n${titles.join('\n')}`;
 
-            const prompt = `
-                다음은 '${name}' 주식 관련 뉴스입니다. 호재와 악재를 짧게 요약해줘.
-                📢 [호재] 내용...
-                ⚠️ [악재] 내용...
-                
-                뉴스: ${rawTitles.join('\n')}
-            `;
-
-            const result = await model.generateContent(prompt);
-            const analysisText = result.response.text().trim();
+            let analysisText = "";
+            try {
+                const result = await model.generateContent(prompt);
+                analysisText = result.response.text().trim();
+            } catch (apiError) {
+                // Gemini API 오류 시 뉴스 제목만 안내
+                console.warn("[Gemini] API Error:", apiError.message);
+                analysisText = "AI 분석이 일시적으로 제한되어 뉴스 제목을 전달합니다.";
+            }
 
             let finalResponse = analysisText + "\n\n🔗 관련 링크:\n";
-            for (let i = 0; i < rawLinks.length; i++) {
-                finalResponse += `- ${rawTitles[i]}\n  ${rawLinks[i]}\n`;
+            for (let i = 0; i < Math.min(titles.length, 2); i++) {
+                finalResponse += `- ${titles[i]}\n  ${links[i]}\n`;
             }
             return finalResponse;
-        } catch (error) {
-            console.error(`[News] Error for ${name}:`, error.message);
-            return "뉴스 분석이 지연되고 있습니다. 잠시 후 다시 조회를 부탁드립니다.";
+        } catch (e) {
+            return "뉴스 데이터를 가져오는 중 오류가 발생했습니다.";
         }
     })();
 
-    // 3.5초 타임아웃 경쟁
+    // 3.5초 타임아웃 세이프가드 (카카오톡 대응)
     const timeoutPromise = new Promise((resolve) =>
         setTimeout(() => resolve("뉴스 분석 중입니다. 잠시 후 주가와 함께 다시 확인해주세요."), 3500)
     );
@@ -128,39 +173,30 @@ async function getAnalyzedNews(name) {
     return Promise.race([analysisPromise, timeoutPromise]);
 }
 
-// 카카오톡 챗봇 스킬 엔드포인트
 app.post('/stock', async (req, res) => {
     try {
-        const userRequest = req.body.userRequest;
-        if (!userRequest || !userRequest.utterance) {
-            return res.json({ version: "2.0", template: { outputs: [{ simpleText: { text: "요청이 올바르지 않습니다." } }] } });
-        }
+        const utterance = req.body.userRequest?.utterance;
+        if (!utterance) throw new Error('Empty utterance');
 
-        const utterance = userRequest.utterance;
-        // 접두어 및 공백 처리 강화
         let stockName = utterance.replace(/^주식\s*[:：]?\s*/, '').trim();
-
         if (!stockName) {
-            return res.json({
-                version: "2.0",
-                template: { outputs: [{ simpleText: { text: "조회할 종목명이나 코드를 입력해주세요.\n(예: 삼성전자 또는 005930)" } }] }
-            });
+            return res.json({ version: "2.0", template: { outputs: [{ simpleText: { text: "종목명을 입력해주세요." } }] } });
         }
 
-        console.log(`[Request] Processing: [${stockName}]`);
+        console.log(`[Request] stockName: [${stockName}]`);
 
-        // 1. 티커 확인
+        // 1. 티커 찾기
         const ticker = await findTicker(stockName);
         if (!ticker) {
             return res.json({
                 version: "2.0",
                 template: {
-                    outputs: [{ simpleText: { text: `'${stockName}' 종목을 찾을 수 없습니다.\n정확한 종목명이나 티커(예: 005930.KS)를 입력해주세요.` } }]
+                    outputs: [{ simpleText: { text: `'${stockName}' 종목을 찾을 수 없습니다. (예: 005930 또는 삼성전자)` } }]
                 }
             });
         }
 
-        // 2. 데이터 병렬 처리 (뉴스 분석은 세이프가드 포함)
+        // 2. 주가 및 뉴스 병렬 수집
         const [info, analysis] = await Promise.all([
             getStockPrice(ticker),
             getAnalyzedNews(stockName)
@@ -169,13 +205,11 @@ app.post('/stock', async (req, res) => {
         if (!info) {
             return res.json({
                 version: "2.0",
-                template: {
-                    outputs: [{ simpleText: { text: `'${ticker}'의 실시간 정보를 가져올 수 없습니다. 잠시 후 다시 시도해 주세요.` } }]
-                }
+                template: { outputs: [{ simpleText: { text: `'${ticker}' 정보를 가져오지 못했습니다. 잠시 후 다시 조회를 부탁드립니다.` } }] }
             });
         }
 
-        const priceText = `📈 ${info.name} (${ticker})\n현재가: ${info.price.toLocaleString()} ${info.currency}\n변동: ${info.change > 0 ? '▲' : '▼'} ${Math.abs(info.change).toLocaleString()} (${info.changePercent.toFixed(2)}%)`;
+        const priceText = `📈 ${info.name} (${ticker})\n현재가: ${info.price.toLocaleString()} ${info.currency}\n변동: ${info.change > 0 ? '▲' : '▼'} ${Math.abs(info.change).toLocaleString()} (${info.changePercent?.toFixed(2)}%)`;
 
         res.json({
             version: "2.0",
@@ -185,10 +219,10 @@ app.post('/stock', async (req, res) => {
         });
 
     } catch (error) {
-        console.error('[Fatal] Request handling error:', error.message);
+        console.error('[EndpointError]', error.message);
         res.json({
             version: "2.0",
-            template: { outputs: [{ simpleText: { text: "서버 처리 지연으로 응답이 늦어지고 있습니다. 잠시 후 다시 확인해 주세요." } }] }
+            template: { outputs: [{ simpleText: { text: "일시적인 오류가 발생했습니다. 잠시 후 다시 시도해주세요." } }] }
         });
     }
 });
@@ -197,4 +231,3 @@ const PORT = process.env.PORT || 3000;
 app.listen(PORT, () => {
     console.log(`카카오톡 주식 봇 서버가 포트 ${PORT}에서 실행 중입니다.`);
 });
-
