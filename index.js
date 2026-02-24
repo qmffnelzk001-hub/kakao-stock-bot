@@ -9,7 +9,8 @@ const app = express();
 app.use(express.json());
 
 const genAI = new GoogleGenerativeAI(process.env.GEMINI_API_KEY);
-const model = genAI.getGenerativeModel({ model: "gemini-1.5-flash" });
+// 모델명을 더 호환성이 높은 gemini-pro로 변경 시도
+const model = genAI.getGenerativeModel({ model: "gemini-pro" });
 
 // 자주 검색되는 종목 매핑 (속도와 정확도를 위해)
 const COMMON_STOCKS = {
@@ -204,13 +205,12 @@ async function getAnalyzedNews(name) {
 
             let analysisText = "";
             try {
-                // 모델 재정의 (필요시 내부 호출)
                 const result = await model.generateContent(prompt);
-                const response = await result.response;
-                analysisText = response.text().trim();
+                const aiRes = await result.response;
+                analysisText = aiRes.text().trim();
             } catch (apiError) {
-                console.error("[Gemini API Error Detail]:", apiError);
-                analysisText = "AI 분석 기능에 일시적인 연결 오류가 발생했습니다. (API 키 권한 또는 모델 가용성 확인 필요)";
+                console.error("[Gemini API Error Detail]:", apiError.message || apiError);
+                analysisText = "현재 AI 분석 서비스 연결이 원활하지 않아 뉴스 제목을 우선 전달합니다.";
             }
 
             let finalResponse = analysisText + "\n\n🔗 관련 링크:\n";
@@ -219,7 +219,8 @@ async function getAnalyzedNews(name) {
             }
             return finalResponse;
         } catch (e) {
-            return "현재 뉴스 분석 서비스가 원활하지 않습니다.";
+            console.error(`[News Error]: ${e.message}`);
+            return "현재 뉴스 분석 데이터를 가져올 수 없습니다.";
         }
     })();
 
