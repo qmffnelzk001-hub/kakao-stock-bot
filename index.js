@@ -212,14 +212,20 @@ async function getAnalyzedNews(name) {
             const titles = Array.from(xml.matchAll(/<title>([^<]+)<\/title>/g)).map(m => m[1]).slice(2, 4);
             if (titles.length === 0) return "분석할 최신 뉴스가 없습니다.";
 
-            const prompt = `[${name}] 뉴스 요약(3줄):\n📢긍정:\n⚠️부정:\n📊의견:\n뉴스:\n${titles.join('\n')}`;
+            const prompt = `주식 '${name}'의 최근 뉴스 2개를 요약하고 투자 의견을 주세요.
+            형식:
+            📢긍정: [한 줄]
+            ⚠️부정: [한 줄]
+            📊의견: [매수/매도/보류 등]
+            
+            뉴스:
+            ${titles.join('\n')}`;
 
             try {
                 const startTime = Date.now();
-                // 속도 최적화를 위한 설정 추가
                 const result = await model.generateContent({
                     contents: [{ role: 'user', parts: [{ text: prompt }] }],
-                    generationConfig: { maxOutputTokens: 200, temperature: 0.1 }
+                    generationConfig: { maxOutputTokens: 4000, temperature: 0.1 }
                 });
                 const analysisText = result.response.text().trim();
 
