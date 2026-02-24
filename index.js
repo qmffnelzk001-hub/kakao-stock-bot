@@ -199,8 +199,8 @@ async function getAnalyzedNews(name) {
             const response = await axios.get(rssUrl, { timeout: 3000 });
             const xml = response.data;
 
-            // 뉴스 제목 및 링크 추출
-            const titles = Array.from(xml.matchAll(/<title>([^<]+)<\/title>/g)).map(m => m[1]).slice(2, 6);
+            // 뉴스 제목 및 링크 추출 (개수 조절로 속도 향상)
+            const titles = Array.from(xml.matchAll(/<title>([^<]+)<\/title>/g)).map(m => m[1]).slice(2, 5);
             const links = Array.from(xml.matchAll(/<link>([^<]+)<\/link>/g)).map(m => m[1]).slice(2, 5);
 
             if (titles.length === 0) return "분석할 최신 뉴스가 없습니다.";
@@ -208,9 +208,9 @@ async function getAnalyzedNews(name) {
             const prompt = `
                 다음은 주식 '${name}'의 최신 뉴스 제목들입니다.
                 다음 형식을 엄격히 지켜서 딱 3줄로 응답해줘 (한국어):
-                1. 긍정적인 내용 요약 (1줄, 📢 긍정: [내용])
-                2. 부정적인 내용 요약 (1줄, ⚠️ 부정: [내용])
-                3. 뉴스 기반 매수, 매도, 보류 판단 비율 (1줄, 📊 투자 의견: 매수 00%, 매도 00%, 보류 00%)
+                1. 📢 긍정: [내용 요약]
+                2. ⚠️ 부정: [내용 요약]
+                3. 📊 의견: 매수 00%, 매도 00%, 보류 00%
                 
                 뉴스 제목:
                 ${titles.join('\n')}
@@ -218,18 +218,17 @@ async function getAnalyzedNews(name) {
 
             let analysisText = "";
             try {
-                // 타임아웃을 고려하여 생성 시도
+                const startTime = Date.now();
                 const result = await model.generateContent(prompt);
                 const aiRes = await result.response;
                 analysisText = aiRes.text().trim();
+                console.log(`[Gemini] Analysis success for ${name} (${Date.now() - startTime}ms)`);
             } catch (apiError) {
                 console.error("[Gemini API Error Detail]:", {
                     message: apiError.message,
-                    status: apiError.status,
-                    name: apiError.name
+                    status: apiError.status
                 });
 
-                // 429 Error (Rate Limit) 시 안내 문구 변경
                 if (apiError.status === 429) {
                     analysisText = "현재 AI 분석 요청이 많아 지연되고 있습니다. 뉴스 제목을 우선 전달합니다.";
                 } else {
@@ -248,9 +247,12 @@ async function getAnalyzedNews(name) {
         }
     })();
 
-    // 3.5초 타임아웃 세이프가드 (카카오톡 대응)
+    // 4.2초 타임아웃 세이프가드 (카카오톡 5초 제한 대응)
     const timeoutPromise = new Promise((resolve) =>
-        setTimeout(() => resolve("뉴스 분석 중입니다. 잠시 후 주가와 함께 다시 확인해주세요."), 3500)
+        setTimeout(() => {
+            console.warn(`[Timeout] News analysis took > 4.2s for ${name}`);
+            resolve("뉴스 분석 중입니다. 잠시 후 주가와 함께 다시 확인해주세요.");
+        }, 4200)
     );
 
     return Promise.race([analysisPromise, timeoutPromise]);
