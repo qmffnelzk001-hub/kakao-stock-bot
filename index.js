@@ -129,7 +129,7 @@ async function getStockPrice(ticker) {
 }
 
 /**
- * 뉴스 검색 및 Gemini 분석
+ * 뉴스 검색 및 Gemini 분석 (긍정/부정 요약 + 투자 비율)
  */
 async function getAnalyzedNews(name) {
     const analysisPromise = (async () => {
@@ -138,19 +138,28 @@ async function getAnalyzedNews(name) {
             const response = await axios.get(rssUrl, { timeout: 3000 });
             const xml = response.data;
 
-            const titles = Array.from(xml.matchAll(/<title>([^<]+)<\/title>/g)).map(m => m[1]).slice(1, 4);
+            const titles = Array.from(xml.matchAll(/<title>([^<]+)<\/title>/g)).map(m => m[1]).slice(1, 5);
             const links = Array.from(xml.matchAll(/<link>([^<]+)<\/link>/g)).map(m => m[1]).slice(1, 4);
 
             if (titles.length === 0) return "분석할 최신 뉴스가 없습니다.";
 
-            const prompt = `주식 '${name}' 뉴스 요약 (호재 📢, 악재 ⚠️):\n${titles.join('\n')}`;
+            // 사용자 요청에 맞춘 정교한 프롬프트
+            const prompt = `
+                다음은 주식 '${name}'의 최신 뉴스 제목들입니다.
+                다음 형식을 엄격히 지켜서 딱 3줄로 응답해줘:
+                1. 긍정적인 내용 요약 (1줄, 📢 긍정: [내용])
+                2. 부정적인 내용 요약 (1줄, ⚠️ 부정: [내용])
+                3. 뉴스 기반 매수, 매도, 보류 판단 비율 (1줄, 📊 투자 의견: 매수 00%, 매도 00%, 보류 00%)
+                
+                뉴스 제목:
+                ${titles.join('\n')}
+            `;
 
             let analysisText = "";
             try {
                 const result = await model.generateContent(prompt);
                 analysisText = result.response.text().trim();
             } catch (apiError) {
-                // Gemini API 오류 시 뉴스 제목만 안내
                 console.warn("[Gemini] API Error:", apiError.message);
                 analysisText = "AI 분석이 일시적으로 제한되어 뉴스 제목을 전달합니다.";
             }
@@ -161,7 +170,7 @@ async function getAnalyzedNews(name) {
             }
             return finalResponse;
         } catch (e) {
-            return "뉴스 데이터를 가져오는 중 오류가 발생했습니다.";
+            return "현재 뉴스 분석 서비스가 원활하지 않습니다.";
         }
     })();
 
