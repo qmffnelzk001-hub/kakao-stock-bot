@@ -199,18 +199,17 @@ async function getAnalyzedNews(name) {
             const response = await axios.get(rssUrl, { timeout: 3000 });
             const xml = response.data;
 
-            // 뉴스 제목 및 링크 추출 (개수 조절로 속도 향상)
+            // 뉴스 제목 추출 (개수 조절로 속도 향상)
             const titles = Array.from(xml.matchAll(/<title>([^<]+)<\/title>/g)).map(m => m[1]).slice(2, 5);
-            const links = Array.from(xml.matchAll(/<link>([^<]+)<\/link>/g)).map(m => m[1]).slice(2, 5);
 
             if (titles.length === 0) return "분석할 최신 뉴스가 없습니다.";
 
             const prompt = `
-                다음은 주식 '${name}'의 최신 뉴스 제목들입니다.
-                다음 형식을 엄격히 지켜서 딱 3줄로 응답해줘 (한국어):
-                1. 📢 긍정: [내용 요약]
-                2. ⚠️ 부정: [내용 요약]
-                3. 📊 의견: 매수 00%, 매도 00%, 보류 00%
+                주식 '${name}'의 최근 뉴스 제목들입니다. 
+                내용을 분석하여 다음 형식으로 딱 3줄 요약 응답해줘:
+                📢 긍정: [호재 한 줄 요약]
+                ⚠️ 부정: [악재 한 줄 요약]
+                📊 비율: [매수/매도/보류 의견 %]
                 
                 뉴스 제목:
                 ${titles.join('\n')}
@@ -222,53 +221,26 @@ async function getAnalyzedNews(name) {
                 const result = await model.generateContent(prompt);
                 const aiRes = await result.response;
                 analysisText = aiRes.text().trim();
-                console.log(`[Gemini] Analysis success for ${name} (${Date.now() - startTime}ms)`);
+                console.log(`[Gemini] Success: ${name} in ${Date.now() - startTime}ms`);
             } catch (apiError) {
-                console.error("[Gemini API Error Detail]:", {
-                    message: apiError.message,
-                    status: apiError.status
-                });
-
-                if (apiError.status === 429) {
-                    analysisText = "현재 AI 분석 요청이 많아 지연되고 있습니다. 뉴스 제목을 우선 전달합니다.";
-                } else {
-                    analysisText = "현재 AI 분석 서비스 연결이 원활하지 않아 뉴스 제목을 우선 전달합니다.";
-                }
+                console.error("[Gemini API Error]:", apiError.message);
+                analysisText = "현재 AI 분석 서비스가 응답하지 않습니다. 잠시 후 다시 조회를 부탁드립니다.";
             }
 
-            let finalResponse = analysisText + "\n\n🔗 관련 링크:\n";
-            for (let i = 0; i < Math.min(titles.length, 2); i++) {
-                finalResponse += `- ${titles[i]}\n  ${links[i]}\n`;
-            }
-            return finalResponse;
+            return analysisText;
         } catch (e) {
             console.error(`[News Error]: ${e.message}`);
-            return "현재 뉴스 분석 데이터를 가져올 수 없습니다.";
+            return "뉴스 조회가 지연되고 있습니다.";
         }
     })();
 
-    // 타임아웃 세이프가드 (카카오톡 5초 제한 대응)
-    // 4.2초가 지나면 AI 분석 대신 뉴스 제목만이라도 반환합니다.
-    const timeoutPromise = new Promise(async (resolve) => {
-        setTimeout(async () => {
-            try {
-                const rssUrl = `https://news.google.com/rss/search?q=${encodeURIComponent(name)}+주식&hl=ko&gl=KR&ceid=KR:ko`;
-                const response = await axios.get(rssUrl, { timeout: 2000 });
-                const xml = response.data;
-                const titles = Array.from(xml.matchAll(/<title>([^<]+)<\/title>/g)).map(m => m[1]).slice(2, 5);
-                const links = Array.from(xml.matchAll(/<link>([^<]+)<\/link>/g)).map(m => m[1]).slice(2, 5);
-
-                let fallbackMsg = "현재 AI 분석이 지연되어 뉴스 제목을 우선 전달합니다.\n\n🔗 관련 뉴스:\n";
-                for (let i = 0; i < titles.length; i++) {
-                    fallbackMsg += `- ${titles[i]}\n  ${links[i]}\n`;
-                }
-                console.warn(`[Timeout] Fallback news sent for ${name}`);
-                resolve(fallbackMsg);
-            } catch (e) {
-                resolve("현재 AI 분석 및 뉴스 조회가 지연되고 있습니다. 잠시 후 다시 확인해주세요.");
-            }
-        }, 4200);
-    });
+    // 4.5초 타임아웃 세이프가드 (카카오톡 5초 제한 대응 최대치)
+    const timeoutPromise = new Promise((resolve) =>
+        setTimeout(() => {
+            console.warn(`[Timeout] Analysis took > 4.5s for ${name}`);
+            resolve("현재 분석 요청이 많아 지연되고 있습니다. 결과가 곧 준비되니 잠시 후 다시 확인해주세요.");
+        }, 4500)
+    );
 
     return Promise.race([analysisPromise, timeoutPromise]);
 }
