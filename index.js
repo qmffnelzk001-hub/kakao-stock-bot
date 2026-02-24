@@ -245,12 +245,12 @@ async function getAnalyzedNews(name) {
         }
     })();
 
-    // 4.6초 타임아웃 (카카오톡 5초 제한 대응)
+    // 3.8초 타임아웃 (카카오톡 5초 제한 대응 안전선)
     const timeoutPromise = new Promise((resolve) =>
         setTimeout(() => {
             console.warn(`[Timeout/Background] ${name} analysis continuing in background...`);
-            resolve("🚀 뉴스 분석이 거의 완료되었습니다! 5초 후 다시 검색하시면 결과를 바로 보실 수 있습니다.");
-        }, 4600)
+            resolve("🚀 뉴스 분석이 진행 중입니다! 3~5초 후 다시 검색하시면 AI 분석 결과를 즉시 확인하실 수 있습니다.");
+        }, 3800)
     );
 
     return Promise.race([analysisPromise, timeoutPromise]);
