@@ -247,13 +247,28 @@ async function getAnalyzedNews(name) {
         }
     })();
 
-    // 4.2초 타임아웃 세이프가드 (카카오톡 5초 제한 대응)
-    const timeoutPromise = new Promise((resolve) =>
-        setTimeout(() => {
-            console.warn(`[Timeout] News analysis took > 4.2s for ${name}`);
-            resolve("뉴스 분석 중입니다. 잠시 후 주가와 함께 다시 확인해주세요.");
-        }, 4200)
-    );
+    // 타임아웃 세이프가드 (카카오톡 5초 제한 대응)
+    // 4.2초가 지나면 AI 분석 대신 뉴스 제목만이라도 반환합니다.
+    const timeoutPromise = new Promise(async (resolve) => {
+        setTimeout(async () => {
+            try {
+                const rssUrl = `https://news.google.com/rss/search?q=${encodeURIComponent(name)}+주식&hl=ko&gl=KR&ceid=KR:ko`;
+                const response = await axios.get(rssUrl, { timeout: 2000 });
+                const xml = response.data;
+                const titles = Array.from(xml.matchAll(/<title>([^<]+)<\/title>/g)).map(m => m[1]).slice(2, 5);
+                const links = Array.from(xml.matchAll(/<link>([^<]+)<\/link>/g)).map(m => m[1]).slice(2, 5);
+
+                let fallbackMsg = "현재 AI 분석이 지연되어 뉴스 제목을 우선 전달합니다.\n\n🔗 관련 뉴스:\n";
+                for (let i = 0; i < titles.length; i++) {
+                    fallbackMsg += `- ${titles[i]}\n  ${links[i]}\n`;
+                }
+                console.warn(`[Timeout] Fallback news sent for ${name}`);
+                resolve(fallbackMsg);
+            } catch (e) {
+                resolve("현재 AI 분석 및 뉴스 조회가 지연되고 있습니다. 잠시 후 다시 확인해주세요.");
+            }
+        }, 4200);
+    });
 
     return Promise.race([analysisPromise, timeoutPromise]);
 }
