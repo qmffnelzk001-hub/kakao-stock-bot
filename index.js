@@ -27,13 +27,20 @@ const COMMON_STOCKS = {
     '테슬라': 'TSLA',
     '엔비디아': 'NVDA',
     '네이버': '035420.KS',
+    'naver': '035420.KS',
     '카카오': '035720.KS',
-    'sk하이닉스': '006660.KS',
-    '하이닉스': '006660.KS',
+    'sk하이닉스': '000660.KS',
+    '하이닉스': '000660.KS',
+    'sk': '003600.KS',
     '현대차': '005380.KS',
+    '현대자동차': '005380.KS',
     '기아': '000270.KS',
     '에코프로': '086520.KQ',
-    '삼성sdi': '006400.KS'
+    '삼성sdi': '006400.KS',
+    'lg에너지솔루션': '373220.KS',
+    'lg엔솔': '373220.KS',
+    '포스코홀딩스': '005490.KS',
+    'posco홀딩스': '005490.KS'
 };
 
 /**
@@ -274,10 +281,9 @@ app.post('/stock', async (req, res) => {
 
         console.log(`[Request] Resolved stockName: [${stockName}]`);
 
-        // 2. 티커 찾기
-        const ticker = await findTicker(stockName);
+        // 2. 티커 찾기 (이름과 티커를 함께 가져오도록 시도)
+        let ticker = await findTicker(stockName);
         if (!ticker) {
-            // "주식"으로 시작하지 않은 발화인데 종목을 못 찾은 경우, 일반 대화로 간주하고 조용히 안내
             const isIntentionalSearch = utterance.startsWith("주식");
             const failText = isIntentionalSearch
                 ? `'${stockName}' 종목을 찾을 수 없습니다. (예: 삼성전자, 테슬라)`
@@ -289,7 +295,7 @@ app.post('/stock', async (req, res) => {
             });
         }
 
-        // 2. 주가 및 뉴스 병렬 수집
+        // 3. 주가 및 뉴스 병렬 수집
         const [info, analysis] = await Promise.all([
             getStockPrice(ticker),
             getAnalyzedNews(stockName)
@@ -302,7 +308,12 @@ app.post('/stock', async (req, res) => {
             });
         }
 
-        const priceText = `📈 ${info.name} (${ticker})\n현재가: ${info.price.toLocaleString()} ${info.currency}\n변동: ${info.change > 0 ? '▲' : '▼'} ${Math.abs(info.change).toLocaleString()} (${info.changePercent?.toFixed(2)}%)`;
+        // 이름 보정: 야후 파이낸스 이름이 부실하면 사용자가 검색한 이름을 사용
+        const displayName = (info.name === ticker || /^[0-9.]+$/.test(info.name) || info.name.length < 2)
+            ? stockName.toUpperCase()
+            : info.name;
+
+        const priceText = `📈 ${displayName} (${ticker})\n현재가: ${info.price.toLocaleString()} ${info.currency}\n변동: ${info.change > 0 ? '▲' : '▼'} ${Math.abs(info.change).toLocaleString()} (${info.changePercent?.toFixed(2)}%)`;
 
         res.json({
             version: "2.0",
