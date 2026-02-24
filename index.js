@@ -9,8 +9,16 @@ const app = express();
 app.use(express.json());
 
 const genAI = new GoogleGenerativeAI(process.env.GEMINI_API_KEY);
-// 모델명을 더 호환성이 높은 gemini-pro로 변경 시도
-const model = genAI.getGenerativeModel({ model: "gemini-pro" });
+// 모델명을 최신 표준인 gemini-2.0-flash로 변경 (2026년 기준) 및 안전 설정 완화
+const model = genAI.getGenerativeModel({
+    model: "gemini-2.0-flash",
+    safetySettings: [
+        { category: "HARM_CATEGORY_HARASSMENT", threshold: "BLOCK_NONE" },
+        { category: "HARM_CATEGORY_HATE_SPEECH", threshold: "BLOCK_NONE" },
+        { category: "HARM_CATEGORY_SEXUALLY_EXPLICIT", threshold: "BLOCK_NONE" },
+        { category: "HARM_CATEGORY_DANGEROUS_CONTENT", threshold: "BLOCK_NONE" }
+    ]
+});
 
 // 자주 검색되는 종목 매핑 (속도와 정확도를 위해)
 const COMMON_STOCKS = {
@@ -179,19 +187,24 @@ async function getStockPrice(ticker) {
  * 뉴스 검색 및 Gemini 분석 (긍정/부정 요약 + 투자 비율)
  */
 async function getAnalyzedNews(name) {
+    // API 키 확인
+    if (!process.env.GEMINI_API_KEY) {
+        console.error("[Gemini Error] API Key is missing in .env file");
+        return "현재 AI 분석 서비스 설정을 확인 중입니다. 뉴스 제목을 우선 전달합니다.";
+    }
+
     const analysisPromise = (async () => {
         try {
             const rssUrl = `https://news.google.com/rss/search?q=${encodeURIComponent(name)}+주식&hl=ko&gl=KR&ceid=KR:ko`;
             const response = await axios.get(rssUrl, { timeout: 3000 });
             const xml = response.data;
 
-            // 뉴스 제목 및 링크 추출 (첫 2개는 Google 뉴스 기본 정보일 수 있으므로 건너뜀)
+            // 뉴스 제목 및 링크 추출
             const titles = Array.from(xml.matchAll(/<title>([^<]+)<\/title>/g)).map(m => m[1]).slice(2, 6);
             const links = Array.from(xml.matchAll(/<link>([^<]+)<\/link>/g)).map(m => m[1]).slice(2, 5);
 
             if (titles.length === 0) return "분석할 최신 뉴스가 없습니다.";
 
-            // 사용자 요청에 맞춘 정교한 프롬프트
             const prompt = `
                 다음은 주식 '${name}'의 최신 뉴스 제목들입니다.
                 다음 형식을 엄격히 지켜서 딱 3줄로 응답해줘 (한국어):
@@ -205,12 +218,23 @@ async function getAnalyzedNews(name) {
 
             let analysisText = "";
             try {
+                // 타임아웃을 고려하여 생성 시도
                 const result = await model.generateContent(prompt);
                 const aiRes = await result.response;
                 analysisText = aiRes.text().trim();
             } catch (apiError) {
-                console.error("[Gemini API Error Detail]:", apiError.message || apiError);
-                analysisText = "현재 AI 분석 서비스 연결이 원활하지 않아 뉴스 제목을 우선 전달합니다.";
+                console.error("[Gemini API Error Detail]:", {
+                    message: apiError.message,
+                    status: apiError.status,
+                    name: apiError.name
+                });
+
+                // 429 Error (Rate Limit) 시 안내 문구 변경
+                if (apiError.status === 429) {
+                    analysisText = "현재 AI 분석 요청이 많아 지연되고 있습니다. 뉴스 제목을 우선 전달합니다.";
+                } else {
+                    analysisText = "현재 AI 분석 서비스 연결이 원활하지 않아 뉴스 제목을 우선 전달합니다.";
+                }
             }
 
             let finalResponse = analysisText + "\n\n🔗 관련 링크:\n";
