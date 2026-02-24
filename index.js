@@ -95,29 +95,47 @@ async function findTicker(input) {
 }
 
 /**
- * 실시간 주가 정보 가져오기 (실패 시 코스닥 폴백 포함)
+ * 실시간 주가 정보 가져오기 (차단 대비 폴백 로직 추가)
  */
 async function getStockPrice(ticker) {
     try {
         console.log(`[StockPrice] Fetching quote for: ${ticker}`);
+
+        // 방법 1: quote API 시도
         const quote = await yahooFinance.quote(ticker);
-        if (!quote || quote.regularMarketPrice === undefined) {
-            // .KS로 조회 실패 시 .KQ(코스닥)로 자동 재시도
-            if (ticker.endsWith('.KS')) {
-                const kqTicker = ticker.replace('.KS', '.KQ');
-                console.log(`[StockPrice] No data for .KS, retrying with ${kqTicker}...`);
-                return await getStockPrice(kqTicker);
-            }
-            return null;
+        if (quote && quote.regularMarketPrice !== undefined) {
+            console.log(`[StockPrice] Quote success for ${ticker}: ${quote.regularMarketPrice}`);
+            return {
+                price: quote.regularMarketPrice,
+                change: quote.regularMarketChange,
+                changePercent: quote.regularMarketChangePercent,
+                currency: quote.currency,
+                name: quote.shortName || quote.longName || ticker
+            };
         }
 
-        return {
-            price: quote.regularMarketPrice,
-            change: quote.regularMarketChange,
-            changePercent: quote.regularMarketChangePercent,
-            currency: quote.currency,
-            name: quote.shortName || quote.longName || ticker
-        };
+        // 방법 2: quote 실패 시 chart API로 폴백 (클라우드 환경 차단 대비)
+        console.log(`[StockPrice] Quote returned no data, trying chart API for ${ticker}...`);
+        const chart = await yahooFinance.chart(ticker, { period1: '1d' });
+        if (chart && chart.meta && chart.meta.regularMarketPrice !== undefined) {
+            console.log(`[StockPrice] Chart fallback success for ${ticker}`);
+            return {
+                price: chart.meta.regularMarketPrice,
+                change: chart.meta.regularMarketPrice - chart.meta.previousClose,
+                changePercent: ((chart.meta.regularMarketPrice - chart.meta.previousClose) / chart.meta.previousClose) * 100,
+                currency: chart.meta.currency,
+                name: ticker
+            };
+        }
+
+        // 한국 주식(.KS) 실패 시 .KQ(코스닥)로 자동 전환 시도
+        if (ticker.endsWith('.KS')) {
+            const kqTicker = ticker.replace('.KS', '.KQ');
+            console.log(`[StockPrice] Retrying with ${kqTicker}...`);
+            return await getStockPrice(kqTicker);
+        }
+
+        return null;
     } catch (error) {
         console.error(`[StockPrice] Error (${ticker}):`, error.message);
         // 오류 발생 시에도 코스피라면 코스닥으로 한 번 더 시도
