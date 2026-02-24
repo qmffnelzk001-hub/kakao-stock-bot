@@ -195,25 +195,20 @@ async function getAnalyzedNews(name) {
 
     const analysisPromise = (async () => {
         try {
+            // 뉴스 조회를 더 빠르게 (타임아웃 1.5초로 단축 테크닉)
             const rssUrl = `https://news.google.com/rss/search?q=${encodeURIComponent(name)}+주식&hl=ko&gl=KR&ceid=KR:ko`;
-            const response = await axios.get(rssUrl, { timeout: 3000 });
+            const response = await axios.get(rssUrl, { timeout: 1500 });
             const xml = response.data;
 
-            // 뉴스 제목 추출 (개수 조절로 속도 향상)
             const titles = Array.from(xml.matchAll(/<title>([^<]+)<\/title>/g)).map(m => m[1]).slice(2, 5);
+            if (titles.length === 0) return "최근 관련 뉴스가 없어 분석이 어렵습니다.";
 
-            if (titles.length === 0) return "분석할 최신 뉴스가 없습니다.";
-
-            const prompt = `
-                주식 '${name}'의 최근 뉴스 제목들입니다. 
-                내용을 분석하여 다음 형식으로 딱 3줄 요약 응답해줘:
-                📢 긍정: [호재 한 줄 요약]
-                ⚠️ 부정: [악재 한 줄 요약]
-                📊 비율: [매수/매도/보류 의견 %]
-                
-                뉴스 제목:
-                ${titles.join('\n')}
-            `;
+            const prompt = `[${name}] 뉴스 요약해줘(3줄):
+            📢긍정:
+            ⚠️부정:
+            📊의견:
+            뉴스목록:
+            ${titles.join('\n')}`;
 
             let analysisText = "";
             try {
@@ -221,16 +216,24 @@ async function getAnalyzedNews(name) {
                 const result = await model.generateContent(prompt);
                 const aiRes = await result.response;
                 analysisText = aiRes.text().trim();
-                console.log(`[Gemini] Success: ${name} in ${Date.now() - startTime}ms`);
+                console.log(`[Gemini] Success: ${name} (${Date.now() - startTime}ms)`);
             } catch (apiError) {
-                console.error("[Gemini API Error]:", apiError.message);
-                analysisText = "현재 AI 분석 서비스가 응답하지 않습니다. 잠시 후 다시 조회를 부탁드립니다.";
+                console.error("[Gemini API Error]:", apiError.message, "Status:", apiError.status);
+
+                // 사용자가 요청한 '토큰/한도 부족' 알림 추가
+                if (apiError.status === 429) {
+                    analysisText = "⚠️ 현재 무료 API 할당량(Rate Limit)을 초과했습니다. 잠시 후 다시 시도해 주세요.";
+                } else if (apiError.status === 403 || apiError.message?.includes('quota')) {
+                    analysisText = "⚠️ API 사용 한도(Quota)가 모두 소모되었습니다. 관리자에게 문의하거나 내일 다시 이용해 주세요.";
+                } else {
+                    analysisText = `⚠️ AI 분석 중 오류가 발생했습니다: ${apiError.message?.substring(0, 50)}`;
+                }
             }
 
             return analysisText;
         } catch (e) {
-            console.error(`[News Error]: ${e.message}`);
-            return "뉴스 조회가 지연되고 있습니다.";
+            console.error(`[News/Internal Error]: ${e.message}`);
+            return "현재 뉴스 데이터를 가져올 수 없어 분석을 진행할 수 없습니다.";
         }
     })();
 
